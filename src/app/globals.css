@@ -1,1 +1,6 @@
 @import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist);
+  --font-display: var(--font-audiowide);
+}

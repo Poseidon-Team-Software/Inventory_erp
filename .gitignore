@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# supabase — schema files contain credentials/structure, keep off VCS
+/supabase/

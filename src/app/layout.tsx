@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
-import { Geist } from "next/font/google";
+import { Geist, Audiowide } from "next/font/google";
 import "./globals.css";
 
-const geist = Geist({ subsets: ["latin"] });
+const geist = Geist({ subsets: ["latin"], variable: "--font-geist" });
+const audiowide = Audiowide({
+  weight: "400",
+  subsets: ["latin"],
+  variable: "--font-audiowide",
+});
 
 export const metadata: Metadata = {
   title: "Inventory ERP",
@@ -16,7 +21,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="h-full">
-      <body className={`${geist.className} min-h-full antialiased`}>
+      <body className={`${geist.variable} ${audiowide.variable} min-h-full antialiased`}>
         {children}
       </body>
     </html>
