@@ -1,9 +1,10 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { motion, animate } from "framer-motion";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -11,6 +12,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const cardRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -26,13 +30,43 @@ export default function LoginPage() {
       return;
     }
 
+    // Card rotates out on Y axis
+    animate(cardRef.current!, { rotateY: 90, scale: 0.95 }, {
+      duration: 0.4,
+      ease: [0.55, 0, 1, 0.45],
+    });
+
+    // Overlay comes in slightly after, covering everything dark
+    await new Promise<void>(r => setTimeout(r, 150));
+    await animate(overlayRef.current!, { opacity: 1 }, { duration: 0.35, ease: "easeIn" });
+
+    // Screen is fully dark — navigate seamlessly into the navbar animation
     router.push("/dashboard");
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#333333] bg-[url('/web_bg.png')] bg-cover bg-center">
+    <div
+      className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#333333] bg-[url('/web_bg.png')] bg-cover bg-center"
+      style={{ perspective: "1200px" }}
+    >
+      {/* Dark overlay — fades in on login success */}
+      <div
+        ref={overlayRef}
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundColor: "#1c1c1e",
+          opacity: 0,
+          zIndex: 50,
+          pointerEvents: "none",
+        }}
+      />
+
       {/* Login card */}
-      <div className="relative z-10 w-full max-w-md rounded-3xl bg-white px-14 py-14 shadow-2xl">
+      <motion.div
+        ref={cardRef}
+        className="relative z-10 w-full max-w-md rounded-3xl bg-white px-14 py-14 shadow-2xl"
+      >
         {/* Logo */}
         <div className="mb-10 flex justify-center">
           <Image src="/logo.png" alt="Poseidon Racing Team" width={300} height={300} priority />
@@ -46,7 +80,7 @@ export default function LoginPage() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
-            className="w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-sm shadow-md outline-none transition-all focus:border-[#ff8000] focus:ring-2 focus:ring-[#ff8000]/30"
+            className="w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-sm shadow-md outline-none transition-all focus:border-[#ee8000] focus:ring-2 focus:ring-[#ee8000]/30"
           />
           <input
             type="password"
@@ -54,7 +88,7 @@ export default function LoginPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            className="w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-sm shadow-md outline-none transition-all focus:border-[#ff8000] focus:ring-2 focus:ring-[#ff8000]/30"
+            className="w-full rounded-xl border border-gray-200 bg-white px-5 py-4 text-sm shadow-md outline-none transition-all focus:border-[#ee8000] focus:ring-2 focus:ring-[#ee8000]/30"
           />
 
           {error && (
@@ -69,7 +103,7 @@ export default function LoginPage() {
             {loading ? "..." : "LOGIN"}
           </button>
         </form>
-      </div>
+      </motion.div>
     </div>
   );
 }
