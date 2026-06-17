@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client";
 import { motion, useAnimate, AnimatePresence } from "framer-motion";
 
 const BREAKPOINT = 768;
-const EXPANDED_HEIGHT = 64 + 52 * 2 + 28; // top bar + 2 items + bottom padding
+const EXPANDED_HEIGHT = 64 + 52 * 3 + 28; // top bar + 3 items + bottom padding
 
 export default function Navbar() {
   const [scope, animate] = useAnimate();
@@ -35,12 +35,12 @@ export default function Navbar() {
       ]);
       await animate(logoRef.current!, { opacity: 1 }, { duration: 0.3, ease: "easeOut" });
       animate(whiteLayerRef.current!, { clipPath: "inset(0 100% 0 0)" }, { duration: 0.7, ease: [0.4, 0, 0.2, 1] });
-      await new Promise<void>(r => setTimeout(r, 800));
+      await new Promise<void>((r) => setTimeout(r, 800));
       await Promise.all([
         animate(scope.current, { y: 0, width: 56, height: 56, borderRadius: 28 }, { duration: 0.55, ease: [0.76, 0, 0.24, 1] }),
         animate(logoRef.current!, { scale: 0.45 }, { duration: 0.55, ease: [0.76, 0, 0.24, 1] }),
       ]);
-      await new Promise<void>(r => setTimeout(r, 120));
+      await new Promise<void>((r) => setTimeout(r, 120));
       const logoX = 24 - (targetWidth - 36) / 2;
       await Promise.all([
         animate(scope.current, { width: targetWidth, height: 64, borderRadius: 50 }, { duration: 0.65, ease: [0.37, 0, 0.63, 1] }),
@@ -56,7 +56,6 @@ export default function Navbar() {
     return () => { isMounted = false; };
   }, [animate]);
 
-  // Resize: update pill width and mobile breakpoint
   useEffect(() => {
     if (!showContent) return;
     function onResize() {
@@ -70,12 +69,11 @@ export default function Navbar() {
     return () => window.removeEventListener("resize", onResize);
   }, [showContent, animate]);
 
-  // Expand/collapse pill height for mobile nav
   useEffect(() => {
     if (!showContent || !scope.current) return;
     animate(scope.current, { height: navOpen ? EXPANDED_HEIGHT : 64 }, {
       duration: 0.35,
-      delay: navOpen ? 0 : 0.18, // wait for text to fade out before retracting
+      delay: navOpen ? 0 : 0.18,
       ease: [0.37, 0, 0.63, 1],
     });
   }, [navOpen, showContent, animate]);
@@ -109,8 +107,6 @@ export default function Navbar() {
         zIndex: 50,
         backgroundColor: "#1c1c1e",
         display: "flex",
-        // After showContent: flex-start so logo stays at the top when pill expands.
-        // paddingTop: 14px keeps the logo visually centered in the top 64px area.
         alignItems: showContent ? "flex-start" : "center",
         justifyContent: showContent ? "flex-start" : "center",
         paddingTop: showContent ? 14 : 0,
@@ -120,12 +116,10 @@ export default function Navbar() {
       }}
       className={showContent ? "group" : ""}
     >
-      {/* Background pill — scales on hover without moving content */}
       {showContent && (
         <div className="absolute inset-0 rounded-[50px] bg-[#1c1c1e] group-hover:scale-105 transition-transform duration-300 ease-out" />
       )}
 
-      {/* Logo */}
       <motion.div
         ref={logoRef}
         initial={{ opacity: 0 }}
@@ -138,19 +132,11 @@ export default function Navbar() {
             aria-hidden="true"
             style={{ position: "absolute", inset: 0, clipPath: "inset(0 0% 0 0)" }}
           >
-            <Image
-              src="/logo_mark_orange.png"
-              alt=""
-              width={36}
-              height={36}
-              className="object-contain"
-              style={{ filter: "brightness(0) invert(1)" }}
-            />
+            <Image src="/logo_mark_orange.png" alt="" width={36} height={36} className="object-contain" style={{ filter: "brightness(0) invert(1)" }} />
           </div>
         </Link>
       </motion.div>
 
-      {/* Desktop nav links — absolute center */}
       <AnimatePresence>
         {showContent && !isMobile && (
           <motion.div
@@ -169,17 +155,13 @@ export default function Navbar() {
               zIndex: 1,
             }}
           >
-            <Link href="/projects" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">
-              projects
-            </Link>
-            <Link href="/inventory" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">
-              Inventory
-            </Link>
+            <Link href="/projects" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">projects</Link>
+            <Link href="/inventory" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">Inventory</Link>
+            <Link href="/parts" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">parts</Link>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Mobile chevron — absolute center, rotates when open */}
       <AnimatePresence>
         {showContent && isMobile && (
           <motion.button
@@ -188,7 +170,7 @@ export default function Navbar() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4, ease: "easeOut" }}
-            onClick={() => setNavOpen(v => !v)}
+            onClick={() => setNavOpen((v) => !v)}
             style={{
               position: "absolute",
               left: "50%",
@@ -205,14 +187,8 @@ export default function Navbar() {
             }}
           >
             <motion.svg
-              width="20"
-              height="20"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="white"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+              width="20" height="20" viewBox="0 0 24 24" fill="none"
+              stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
               animate={{ rotate: navOpen ? 180 : 0 }}
               transition={{ duration: 0.3, ease: [0.37, 0, 0.63, 1] }}
             >
@@ -222,7 +198,6 @@ export default function Navbar() {
         )}
       </AnimatePresence>
 
-      {/* Profile — absolute right */}
       <AnimatePresence>
         {showContent && (
           <motion.div
@@ -230,17 +205,11 @@ export default function Navbar() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.4, ease: "easeOut" }}
-            style={{
-              position: "absolute",
-              right: 24,
-              top: 32,
-              transform: "translateY(-50%)",
-              zIndex: 1,
-            }}
+            style={{ position: "absolute", right: 24, top: 32, transform: "translateY(-50%)", zIndex: 1 }}
             ref={menuRef}
           >
             <button
-              onClick={() => setMenuOpen(v => !v)}
+              onClick={() => setMenuOpen((v) => !v)}
               className="group/btn flex items-center justify-center w-9 h-9 rounded-full border border-[#ee8000]"
             >
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="stroke-white group-hover/btn:stroke-[#ee8000] transition-colors duration-200">
@@ -279,7 +248,6 @@ export default function Navbar() {
         )}
       </AnimatePresence>
 
-      {/* Mobile expanded nav items */}
       <AnimatePresence>
         {showContent && isMobile && navOpen && (
           <motion.div
@@ -298,22 +266,9 @@ export default function Navbar() {
               zIndex: 1,
             }}
           >
-            <Link
-              href="/projects"
-              onClick={() => setNavOpen(false)}
-              className="text-white/80 hover:text-white transition-colors"
-              style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}
-            >
-              projects
-            </Link>
-            <Link
-              href="/inventory"
-              onClick={() => setNavOpen(false)}
-              className="text-white/80 hover:text-white transition-colors"
-              style={{ padding: "11px 0", fontSize: 16 }}
-            >
-              Inventory
-            </Link>
+            <Link href="/projects" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}>projects</Link>
+            <Link href="/inventory" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}>Inventory</Link>
+            <Link href="/parts" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16 }}>parts</Link>
           </motion.div>
         )}
       </AnimatePresence>
