@@ -7,8 +7,8 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { motion, useAnimate, AnimatePresence } from "framer-motion";
 
-const BREAKPOINT = 768;
-const EXPANDED_HEIGHT = 64 + 52 * 3 + 28; // top bar + 3 items + bottom padding
+const BREAKPOINT = 1024;
+const EXPANDED_HEIGHT = 64 + 52 * 4 + 28; // top bar + 4 items + bottom padding
 
 export default function Navbar() {
   const [scope, animate] = useAnimate();
@@ -156,8 +156,9 @@ export default function Navbar() {
             }}
           >
             <Link href="/projects" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">projects</Link>
-            <Link href="/inventory" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">Inventory</Link>
+            <Link href="/inventory" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">inventory</Link>
             <Link href="/parts" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">parts</Link>
+            <Link href="/locations" className="text-white/80 text-base hover:text-white transition-colors underline-offset-4 hover:underline decoration-[#ee8000] whitespace-nowrap">locations</Link>
           </motion.div>
         )}
       </AnimatePresence>
@@ -267,8 +268,9 @@ export default function Navbar() {
             }}
           >
             <Link href="/projects" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}>projects</Link>
-            <Link href="/inventory" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}>Inventory</Link>
-            <Link href="/parts" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16 }}>parts</Link>
+            <Link href="/inventory" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}>inventory</Link>
+            <Link href="/parts" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16, borderBottom: "1px solid rgba(238,128,0,0.35)" }}>parts</Link>
+            <Link href="/locations" onClick={() => setNavOpen(false)} className="text-white/80 hover:text-white transition-colors" style={{ padding: "11px 0", fontSize: 16 }}>locations</Link>
           </motion.div>
         )}
       </AnimatePresence>
