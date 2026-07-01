@@ -223,7 +223,7 @@ export default function Navbar() {
               <div className="absolute right-0 top-full mt-3 w-44 bg-[#1c1c1e] rounded-2xl border border-[#ee8000]/30 shadow-2xl overflow-hidden">
                 <button
                   className="w-full flex items-center gap-3 px-4 py-3 text-sm text-white/70 hover:text-white hover:bg-white/5 transition-colors"
-                  onClick={() => setMenuOpen(false)}
+                  onClick={() => { setMenuOpen(false); router.push("/profile"); }}
                 >
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />

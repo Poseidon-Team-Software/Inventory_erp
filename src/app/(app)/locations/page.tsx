@@ -12,7 +12,7 @@ type Box = {
   created_at: string;
 };
 
-const COLS = ["Colour", "Name", "Label", "Description", "Added"] as const;
+const COLS = ["Colour", "Name", "Label", "Description", "Added", ""] as const;
 
 export default function LocationsPage() {
   const [boxes, setBoxes] = useState<Box[]>([]);
@@ -27,6 +27,11 @@ export default function LocationsPage() {
   const [label, setLabel] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+
+  // Delete modal
+  const [deleteTarget, setDeleteTarget] = useState<Box | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   async function fetchBoxes(supabase: ReturnType<typeof createClient>) {
     const { data } = await supabase
@@ -82,6 +87,43 @@ export default function LocationsPage() {
 
     await fetchBoxes(supabase);
     setShowModal(false);
+  }
+
+  function openDeleteModal(box: Box) {
+    setDeleteTarget(box);
+    setDeleteError(null);
+    setDeleting(false);
+  }
+
+  async function handleDeleteBox() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setDeleteError(null);
+
+    const supabase = createClient();
+
+    const { count } = await supabase
+      .from("inventory")
+      .select("entry_id", { count: "exact", head: true })
+      .eq("location", deleteTarget.box_id);
+
+    if (count && count > 0) {
+      setDeleting(false);
+      setDeleteError("This location isn't empty and can't be deleted.");
+      return;
+    }
+
+    const { error } = await supabase.from("boxes").delete().eq("box_id", deleteTarget.box_id);
+
+    setDeleting(false);
+
+    if (error) {
+      setDeleteError(error.message);
+      return;
+    }
+
+    await fetchBoxes(supabase);
+    setDeleteTarget(null);
   }
 
   return (
@@ -151,6 +193,29 @@ export default function LocationsPage() {
                   <td className="px-4 py-3 max-w-xs truncate">{b.description ?? "—"}</td>
                   <td className="px-4 py-3 whitespace-nowrap text-[#1c1c1e]/50">
                     {new Date(b.created_at).toLocaleDateString()}
+                  </td>
+                  <td className="px-3 py-3">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        disabled
+                        title="Coming soon"
+                        className="flex items-center justify-center w-7 h-7 rounded-lg text-[#1c1c1e]/20 cursor-not-allowed"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                          <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => openDeleteModal(b)}
+                        title="Delete location"
+                        className="flex items-center justify-center w-7 h-7 rounded-lg text-[#1c1c1e]/30 hover:text-red-500 hover:bg-red-50 transition-colors"
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -249,6 +314,54 @@ export default function LocationsPage() {
                   </svg>
                 )}
                 {submitting ? "Adding…" : "Add Location"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete Location Modal ── */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+          onClick={(e) => { if (e.target === e.currentTarget && !deleting) setDeleteTarget(null); }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="text-red-500">
+                  <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                </svg>
+              </div>
+              <h2 className="text-lg font-semibold text-[#1c1c1e]">Delete &ldquo;{deleteTarget.name}&rdquo;?</h2>
+            </div>
+
+            <p className="text-sm text-[#1c1c1e]/60 leading-relaxed mb-6">
+              This can&apos;t be undone. If this location still has inventory in it, deletion will be blocked.
+            </p>
+
+            {deleteError && <p className="text-xs text-red-500 mb-4">{deleteError}</p>}
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e]/70 hover:bg-[#1c1c1e]/5 disabled:opacity-40 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteBox}
+                disabled={deleting}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-red-500 text-white text-sm font-medium hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+              >
+                {deleting && (
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                )}
+                {deleting ? "Deleting…" : "Delete Location"}
               </button>
             </div>
           </div>

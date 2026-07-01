@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import SelectDropdown from "@/components/SelectDropdown";
 
@@ -271,7 +272,10 @@ function ProjectCard({ project: p }: { project: Project }) {
   });
 
   return (
-    <div className="group relative bg-white rounded-2xl border border-[#1c1c1e]/10 shadow-sm hover:border-[#ee8000]/50 hover:shadow-md transition-all duration-200 overflow-hidden flex flex-col">
+    <Link
+      href={`/projects/${p.proj_id}`}
+      className="group relative bg-white rounded-2xl border border-[#1c1c1e]/10 shadow-sm hover:border-[#ee8000]/50 hover:shadow-md transition-all duration-200 overflow-hidden flex flex-col"
+    >
       {/* Body */}
       <div className="flex flex-1 gap-4 p-5">
         <div className="flex-1 min-w-0 flex flex-col gap-1">
@@ -306,6 +310,6 @@ function ProjectCard({ project: p }: { project: Project }) {
         <span>{bomCount} part{bomCount !== 1 ? "s" : ""} in BOM</span>
         <span className="ml-auto">{date}</span>
       </div>
-    </div>
+    </Link>
   );
 }

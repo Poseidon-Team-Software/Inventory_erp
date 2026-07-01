@@ -31,6 +31,17 @@ type Part = {
   value: string | null;
 };
 
+type OrderNeed = {
+  part_num: string;
+  description: string | null;
+  value: string | null;
+  footprint: string | null;
+  quantity: number;
+  minQuantity: number;
+  demand: number;
+  orderQty: number;
+};
+
 type Box = {
   box_id: string;
   name: string;
@@ -49,6 +60,7 @@ export default function InventoryPage() {
   const [rows, setRows] = useState<InventoryRow[]>([]);
   const [allParts, setAllParts] = useState<Part[]>([]);
   const [boxes, setBoxes] = useState<Box[]>([]);
+  const [bomDemand, setBomDemand] = useState<Record<string, number>>({});
   const [filterQuery, setFilterQuery] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -85,9 +97,16 @@ export default function InventoryPage() {
       fetchInventory(supabase),
       supabase.from("parts").select("part_num, category, value, description, manufacturer").order("part_num"),
       supabase.from("boxes").select("box_id, name, description, colour").order("name"),
-    ]).then(([, pts, bxs]) => {
+      supabase.from("bom").select("part_num, quantity"),
+    ]).then(([, pts, bxs, bom]) => {
       setAllParts(pts.data ?? []);
       setBoxes(bxs.data ?? []);
+      setBomDemand(
+        (bom.data ?? []).reduce((acc, r) => {
+          acc[r.part_num] = (acc[r.part_num] ?? 0) + r.quantity;
+          return acc;
+        }, {} as Record<string, number>)
+      );
       setLoading(false);
     });
   }, []);
@@ -115,6 +134,53 @@ export default function InventoryPage() {
         return tokens.every((tok) => fields.some((f) => f?.toLowerCase().includes(tok)));
       })
     : rows;
+
+  // Combine per-part stock (aggregated across boxes) with BOM demand from every
+  // project — a part can need ordering either because it's below its min-quantity
+  // buffer or because projects need more of it than is currently in stock.
+  const needMap = new Map<string, OrderNeed>();
+
+  for (const r of rows) {
+    if (!r.parts) continue;
+    const existing = needMap.get(r.parts.part_num);
+    if (existing) {
+      existing.quantity += r.quantity;
+      existing.minQuantity = Math.max(existing.minQuantity, r.min_quantity);
+    } else {
+      needMap.set(r.parts.part_num, {
+        part_num: r.parts.part_num,
+        description: r.parts.description,
+        value: r.parts.value,
+        footprint: r.parts.footprint,
+        quantity: r.quantity,
+        minQuantity: r.min_quantity,
+        demand: 0,
+        orderQty: 0,
+      });
+    }
+  }
+
+  for (const [partNum, demand] of Object.entries(bomDemand)) {
+    if (!needMap.has(partNum)) {
+      const p = allParts.find((ap) => ap.part_num === partNum);
+      needMap.set(partNum, {
+        part_num: partNum,
+        description: p?.description ?? null,
+        value: p?.value ?? null,
+        footprint: null,
+        quantity: 0,
+        minQuantity: 0,
+        demand: 0,
+        orderQty: 0,
+      });
+    }
+    needMap.get(partNum)!.demand = demand;
+  }
+
+  const toOrder = [...needMap.values()]
+    .map((n) => ({ ...n, orderQty: Math.max(n.minQuantity - n.quantity, n.demand - n.quantity, 0) }))
+    .filter((n) => n.orderQty > 0)
+    .sort((a, b) => b.orderQty - a.orderQty);
 
   const partResults = partSearch.trim()
     ? allParts
@@ -253,6 +319,57 @@ export default function InventoryPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Needs Ordering */}
+      {!loading && (
+        <div className="mt-10">
+          <div className="flex items-center gap-2 mb-4">
+            <h2 className="text-lg font-semibold text-[#1c1c1e]">Needs Ordering</h2>
+            {toOrder.length > 0 && (
+              <span className="text-xs font-medium text-red-500 bg-red-50 px-2 py-0.5 rounded-full">{toOrder.length}</span>
+            )}
+          </div>
+
+          {toOrder.length === 0 ? (
+            <p className="text-sm text-[#1c1c1e]/50">Everything is stocked above its minimum.</p>
+          ) : (
+            <div className="overflow-x-auto rounded-2xl border border-[#1c1c1e]/10 shadow-sm">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-[#1c1c1e] text-white">
+                  <tr>
+                    {["Part #", "Description", "Value", "Footprint", "In Stock", "Needed", "Order Qty"].map((h) => (
+                      <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {toOrder.map((r, i) => (
+                    <tr
+                      key={r.part_num}
+                      className={`border-t border-[#1c1c1e]/10 ${
+                        i % 2 === 0 ? "bg-white" : "bg-[#fdf0e0]/60"
+                      } hover:bg-[#ee8000]/10 transition-colors`}
+                    >
+                      <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">{r.part_num}</td>
+                      <td className="px-4 py-3 max-w-xs truncate">{r.description ?? "—"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.value ?? "—"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.footprint ?? "—"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.quantity}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{Math.max(r.minQuantity, r.demand)}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 bg-red-50 border border-red-100 px-2.5 py-1 rounded-full">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                          {r.orderQty}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
