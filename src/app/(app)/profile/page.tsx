@@ -18,6 +18,11 @@ export default function ProfilePage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  const [newPassword, setNewPassword] = useState("");
+  const [pwSubmitting, setPwSubmitting] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwSaved, setPwSaved] = useState(false);
+
   useEffect(() => {
     const supabase = createClient();
 
@@ -75,6 +80,28 @@ export default function ProfilePage() {
       return;
     }
     setSaved(true);
+  }
+
+  async function handleChangePassword() {
+    if (newPassword.length < 6) {
+      setPwError("Password must be at least 6 characters.");
+      return;
+    }
+
+    setPwSubmitting(true);
+    setPwError(null);
+    setPwSaved(false);
+
+    const supabase = createClient();
+    const { error: pwUpdateError } = await supabase.auth.updateUser({ password: newPassword });
+
+    setPwSubmitting(false);
+    if (pwUpdateError) {
+      setPwError(pwUpdateError.message);
+      return;
+    }
+    setNewPassword("");
+    setPwSaved(true);
   }
 
   if (loading) {
@@ -151,6 +178,39 @@ export default function ProfilePage() {
             {submitting ? "Saving…" : "Save Profile"}
           </button>
         </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-[#1c1c1e]/10 shadow-sm p-6 mt-6">
+        <h2 className="text-sm font-semibold text-[#1c1c1e] mb-4">Change Password</h2>
+
+        <div className="mb-4">
+          <label className="block text-[10px] font-semibold text-[#1c1c1e]/50 mb-1.5 uppercase tracking-widest">New Password</label>
+          <input
+            type="password"
+            placeholder="At least 6 characters"
+            value={newPassword}
+            onChange={(e) => { setNewPassword(e.target.value); setPwSaved(false); }}
+            onKeyDown={(e) => e.key === "Enter" && handleChangePassword()}
+            className="w-full px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 bg-white text-sm text-[#1c1c1e] placeholder:text-[#1c1c1e]/35 focus:outline-none focus:ring-2 focus:ring-[#ee8000]/50 transition"
+          />
+        </div>
+
+        {pwError && <p className="text-xs text-red-500 mb-4">{pwError}</p>}
+        {pwSaved && !pwError && <p className="text-xs text-emerald-600 mb-4">Password updated.</p>}
+
+        <button
+          onClick={handleChangePassword}
+          disabled={pwSubmitting || !newPassword}
+          className="px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+        >
+          {pwSubmitting && (
+            <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+            </svg>
+          )}
+          {pwSubmitting ? "Updating…" : "Update Password"}
+        </button>
       </div>
     </div>
   );
