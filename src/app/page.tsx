@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useState, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { motion, animate } from "framer-motion";
@@ -15,16 +15,36 @@ export default function LoginPage() {
 
   const cardRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  // handleLogin drives its own animated redirect on success — the
+  // auto-redirect listener below should stay out of its way.
+  const skipAutoRedirect = useRef(false);
+
+  // Covers a magic link (sent manually from the Supabase dashboard) landing
+  // back here and establishing a session (fires SIGNED_IN), or someone with
+  // an already-valid session just visiting "/" directly (fires
+  // INITIAL_SESSION). Either way, skip the login form and go straight to
+  // the dashboard.
+  useEffect(() => {
+    const supabase = createClient();
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if ((event === "SIGNED_IN" || event === "INITIAL_SESSION") && session && !skipAutoRedirect.current) {
+        router.replace("/dashboard");
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [router]);
 
   async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
     setLoading(true);
+    skipAutoRedirect.current = true;
 
     const supabase = createClient();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
+      skipAutoRedirect.current = false;
       setError(error.message);
       setLoading(false);
       return;

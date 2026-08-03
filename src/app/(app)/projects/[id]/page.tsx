@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
@@ -24,6 +24,7 @@ type BomRow = {
   notes: string | null;
   parts: {
     part_num: string;
+    manufacturer_part_num: string | null;
     description: string | null;
     value: string | null;
     footprint: string | null;
@@ -34,11 +35,33 @@ type BomRow = {
 
 type PartOption = {
   part_num: string;
+  manufacturer_part_num: string | null;
   description: string | null;
   value: string | null;
   footprint: string | null;
   inStock: number;
 };
+
+type ImportRow = {
+  part_num?: string;
+  manufacturer_part_num?: string;
+  quantity: number;
+  designator?: string;
+  notes?: string;
+};
+
+type ImportSummary = {
+  imported: number;
+  createdParts: string[];
+  errors: { rowIndex: number; identifier: string; reason: string }[];
+  duplicateDesignators: { rowIndex: number; designator: string; identifier: string }[];
+  error?: string;
+};
+
+function csvEscape(value: unknown): string {
+  const s = value === null || value === undefined ? "" : String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
 
 const STATUS_STYLES: Record<ProjectStatus, string> = {
   Active:    "bg-emerald-50 text-emerald-600 border border-emerald-100",
@@ -120,10 +143,18 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // CSV import
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importParseError, setImportParseError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
+
   async function loadBom(supabase: ReturnType<typeof createClient>) {
     const { data: bomData } = await supabase
       .from("bom")
-      .select("id, quantity, designator, notes, parts(part_num, description, value, footprint, category)")
+      .select("id, quantity, designator, notes, parts(part_num, manufacturer_part_num, description, value, footprint, category)")
       .eq("project_id", id)
       .order("designator");
 
@@ -147,7 +178,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
   async function loadPartOptions(supabase: ReturnType<typeof createClient>) {
     const [{ data: parts }, { data: inv }] = await Promise.all([
-      supabase.from("parts").select("part_num, description, value, footprint").order("part_num"),
+      supabase.from("parts").select("part_num, manufacturer_part_num, description, value, footprint").order("part_num"),
       supabase.from("inventory").select("part_num, quantity"),
     ]);
 
@@ -288,6 +319,95 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     router.push("/projects");
   }
 
+  function handleExportCsv() {
+    const headers = ["part_num", "manufacturer_part_num", "description", "value", "footprint", "category", "quantity", "designator", "notes", "in_stock"];
+    const lines = [headers.join(",")];
+    for (const r of bom) {
+      lines.push(
+        [
+          r.parts?.part_num ?? "",
+          r.parts?.manufacturer_part_num ?? "",
+          r.parts?.description ?? "",
+          r.parts?.value ?? "",
+          r.parts?.footprint ?? "",
+          r.parts?.category ?? "",
+          r.quantity,
+          r.designator ?? "",
+          r.notes ?? "",
+          r.inStock,
+        ]
+          .map(csvEscape)
+          .join(",")
+      );
+    }
+
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${(project?.proj_name ?? "bom").replace(/[^a-z0-9-_]+/gi, "_")}-bom.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+
+    const text = await file.text();
+    const Papa = (await import("papaparse")).default;
+    const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
+
+    setImportSummary(null);
+
+    if (parsed.errors.length > 0) {
+      setImportParseError(parsed.errors[0].message);
+      setImportRows([]);
+    } else {
+      setImportParseError(null);
+      setImportRows(
+        parsed.data.map((row) => ({
+          part_num: row.part_num?.trim() || undefined,
+          manufacturer_part_num: row.manufacturer_part_num?.trim() || undefined,
+          quantity: Number(row.quantity) || 0,
+          designator: row.designator?.trim() || undefined,
+          notes: row.notes?.trim() || undefined,
+        }))
+      );
+    }
+    setShowImportModal(true);
+  }
+
+  async function handleConfirmImport() {
+    setImporting(true);
+    const supabase = createClient();
+
+    const res = await fetch(`/api/projects/${id}/bom/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: importRows }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      setImportSummary({ imported: 0, createdParts: [], errors: [], duplicateDesignators: [], error: data.error ?? "Import failed" });
+      setImporting(false);
+      return;
+    }
+
+    setImportSummary(data);
+    await Promise.all([loadBom(supabase), loadPartOptions(supabase)]);
+    setImporting(false);
+  }
+
+  function closeImportModal() {
+    setShowImportModal(false);
+    setImportRows([]);
+    setImportParseError(null);
+    setImportSummary(null);
+  }
+
   const addResults = addSearch.trim()
     ? partOptions.filter((o) =>
         [o.part_num, o.description, o.value].some((f) =>
@@ -380,14 +500,15 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           {/* Actions */}
           <div className="grid grid-cols-3 gap-2">
             <button
-              disabled
-              title="Coming soon"
-              className="flex flex-col items-center justify-center gap-1.5 px-3 py-3 rounded-xl border border-[#1c1c1e]/10 text-[#1c1c1e]/30 cursor-not-allowed"
+              onClick={handleExportCsv}
+              disabled={bom.length === 0}
+              title={bom.length === 0 ? "No parts to export" : "Export BOM as CSV"}
+              className="flex flex-col items-center justify-center gap-1.5 px-3 py-3 rounded-xl border border-[#1c1c1e]/10 text-[#1c1c1e]/70 hover:bg-[#1c1c1e]/5 disabled:opacity-30 disabled:cursor-not-allowed transition"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="6 9 6 2 18 2 18 9" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /><rect x="6" y="14" width="12" height="8" />
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              <span className="text-[11px] font-medium">Print BOM</span>
+              <span className="text-[11px] font-medium">Export CSV</span>
             </button>
             <button
               disabled
@@ -416,15 +537,33 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         <div>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-[#1c1c1e]">Bill of Materials</h2>
-            <button
-              onClick={openAddModal}
-              className="px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] transition flex items-center gap-2 whitespace-nowrap"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-              </svg>
-              Add Part
-            </button>
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-[#1c1c1e]/70 text-sm font-medium hover:bg-[#1c1c1e]/5 transition flex items-center gap-2 whitespace-nowrap"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                Import CSV
+              </button>
+              <button
+                onClick={openAddModal}
+                className="px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] transition flex items-center gap-2 whitespace-nowrap"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                Add Part
+              </button>
+            </div>
           </div>
 
           {bom.length === 0 ? (
@@ -633,6 +772,113 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                 {deleting ? "Deleting…" : "Delete Project"}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Import CSV Modal ── */}
+      {showImportModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+          onClick={(e) => { if (e.target === e.currentTarget && !importing) closeImportModal(); }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 max-h-[85vh] overflow-y-auto">
+            <h2 className="text-lg font-semibold text-[#1c1c1e] mb-1">Import BOM from CSV</h2>
+
+            {importParseError ? (
+              <>
+                <p className="text-sm text-red-500 leading-relaxed my-4">Couldn&apos;t parse that file: {importParseError}</p>
+                <button
+                  onClick={closeImportModal}
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e]/70 hover:bg-[#1c1c1e]/5 transition"
+                >
+                  Close
+                </button>
+              </>
+            ) : !importSummary ? (
+              <>
+                <p className="text-xs text-[#1c1c1e]/40 mb-5">
+                  Each row is matched to our parts catalog by part number, falling back to a live Mouser lookup when needed.
+                </p>
+                <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-sm px-4 py-3 mb-5 leading-relaxed">
+                  This <strong>replaces</strong> the current BOM. {bom.length} existing part{bom.length !== 1 ? "s" : ""} will be removed and
+                  replaced with {importRows.length} row{importRows.length !== 1 ? "s" : ""} from this file.
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={closeImportModal}
+                    disabled={importing}
+                    className="flex-1 px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e]/70 hover:bg-[#1c1c1e]/5 disabled:opacity-40 transition"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleConfirmImport}
+                    disabled={importing || importRows.length === 0}
+                    className="flex-1 px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+                  >
+                    {importing && (
+                      <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                      </svg>
+                    )}
+                    {importing ? "Importing…" : "Replace BOM"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {importSummary.error ? (
+                  <p className="text-sm text-red-500 leading-relaxed my-4">{importSummary.error}</p>
+                ) : (
+                  <div className="flex flex-col gap-3 my-4">
+                    <p className="text-sm text-[#1c1c1e]/70">
+                      Imported <strong>{importSummary.imported}</strong> part{importSummary.imported !== 1 ? "s" : ""} into the BOM.
+                    </p>
+
+                    {importSummary.createdParts.length > 0 && (
+                      <div className="text-sm">
+                        <p className="text-[#1c1c1e]/70 mb-1">
+                          Added {importSummary.createdParts.length} new part{importSummary.createdParts.length !== 1 ? "s" : ""} from Mouser:
+                        </p>
+                        <p className="font-mono text-xs text-[#1c1c1e]/50 break-words">{importSummary.createdParts.join(", ")}</p>
+                      </div>
+                    )}
+
+                    {importSummary.duplicateDesignators.length > 0 && (
+                      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-xs px-4 py-3">
+                        <p className="font-medium mb-1">
+                          {importSummary.duplicateDesignators.length} duplicate designator{importSummary.duplicateDesignators.length !== 1 ? "s" : ""} skipped:
+                        </p>
+                        {importSummary.duplicateDesignators.map((d) => (
+                          <p key={d.rowIndex}>Row {d.rowIndex + 2}: designator &ldquo;{d.designator}&rdquo; ({d.identifier})</p>
+                        ))}
+                      </div>
+                    )}
+
+                    {importSummary.errors.length > 0 && (
+                      <div className="rounded-xl border border-red-200 bg-red-50 text-red-600 text-xs px-4 py-3">
+                        <p className="font-medium mb-1">
+                          {importSummary.errors.length} row{importSummary.errors.length !== 1 ? "s" : ""} skipped:
+                        </p>
+                        {importSummary.errors.map((err) => (
+                          <p key={err.rowIndex}>Row {err.rowIndex + 2}: {err.identifier} — {err.reason}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  onClick={closeImportModal}
+                  className="w-full px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] transition"
+                >
+                  Done
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
