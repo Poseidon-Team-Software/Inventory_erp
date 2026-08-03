@@ -58,8 +58,6 @@ export async function POST(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const { data: { user } } = await supabase.auth.getUser();
-
   // ── 1. Dedupe by designator (first non-blank wins; nulls never collide) ──
   const duplicateDesignators: DuplicateDesignator[] = [];
   const seenDesignators = new Set<string>();
@@ -167,46 +165,9 @@ export async function POST(
     return NextResponse.json({ imported: 0, createdParts, errors, duplicateDesignators });
   }
 
-  // ── 5. Reconcile existing BOM quantities back into inventory, same pattern
-  //        as the project-delete flow, then clear the BOM ──
-  const { data: existingBom } = await supabase
-    .from("bom")
-    .select("part_num, quantity")
-    .eq("project_id", projectId);
-
-  const demand = (existingBom ?? []).reduce((acc, r) => {
-    acc[r.part_num] = (acc[r.part_num] ?? 0) + r.quantity;
-    return acc;
-  }, {} as Record<string, number>);
-
-  for (const [partNum, qty] of Object.entries(demand)) {
-    const { data: existing } = await supabase
-      .from("inventory")
-      .select("entry_id, quantity")
-      .eq("part_num", partNum)
-      .limit(1)
-      .maybeSingle();
-
-    if (existing) {
-      await supabase
-        .from("inventory")
-        .update({
-          quantity: existing.quantity + qty,
-          last_updated: new Date().toISOString(),
-          updated_by: user?.id ?? null,
-        })
-        .eq("entry_id", existing.entry_id);
-    } else {
-      await supabase.from("inventory").insert({
-        part_num: partNum,
-        quantity: qty,
-        min_quantity: 0,
-        updated_by: user?.id ?? null,
-        last_updated: new Date().toISOString(),
-      });
-    }
-  }
-
+  // ── 5. Clear the existing BOM. Inventory is left untouched here, same as
+  //        the single-part "Add to BOM" flow — BOM quantity is "needed",
+  //        not a reservation against physical stock. ──
   const { error: deleteError } = await supabase.from("bom").delete().eq("project_id", projectId);
   if (deleteError) {
     return NextResponse.json({ error: `Failed to clear existing BOM: ${deleteError.message}` }, { status: 500 });
@@ -226,7 +187,7 @@ export async function POST(
   if (insertError) {
     return NextResponse.json(
       {
-        error: `BOM was cleared but the new rows failed to insert: ${insertError.message}. Every row was already resolved to a known part_num, so retrying this exact import is cheap and safe — it will do no Mouser calls and the inventory reconcile above is now a no-op.`,
+        error: `BOM was cleared but the new rows failed to insert: ${insertError.message}. Every row was already resolved to a known part_num, so retrying this exact import is cheap and safe — it will do no Mouser calls.`,
       },
       { status: 500 }
     );
