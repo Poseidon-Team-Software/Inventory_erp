@@ -1,6 +1,5 @@
-// Shared Mouser API helpers — used by both the keyword-search part import
-// (src/app/api/parts/import/route.ts) and the exact-part-number lookup used
-// as a CSV-import fallback (src/app/api/projects/[id]/bom/import/route.ts).
+// Shared Mouser API helpers used by the keyword-search part import
+// (src/app/api/parts/import/route.ts).
 
 export type MouserPart = {
   MouserPartNumber: string;
@@ -110,29 +109,4 @@ export function mouserPartToRow(p: MouserPart) {
     image: p.ImagePath ?? null,
     mouser_details: (({ PriceBreaks, ...rest }) => { void PriceBreaks; return rest; })(p),
   };
-}
-
-// Exact-match lookup — used when a CSV row's part number should resolve to
-// one specific part, not a list of keyword-search candidates.
-export async function lookupMouserPartByNumber(
-  partNum: string,
-  apiKey: string
-): Promise<ReturnType<typeof mouserPartToRow> | null> {
-  const res = await fetch(`https://api.mouser.com/api/v1/search/partnumber?apiKey=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      SearchByPartNumberRequest: { mouserPartNumber: partNum, partSearchOptions: "" },
-    }),
-  });
-
-  if (!res.ok) return null;
-
-  const data = await res.json();
-  if (data.Errors?.length) return null;
-
-  const part: MouserPart | undefined = data.SearchResults?.Parts?.[0];
-  if (!part?.MouserPartNumber) return null;
-
-  return mouserPartToRow(part);
 }

@@ -97,7 +97,7 @@ export default function InventoryPage() {
       fetchInventory(supabase),
       supabase.from("parts").select("part_num, category, value, description, manufacturer").order("part_num"),
       supabase.from("boxes").select("box_id, name, description, colour").order("name"),
-      supabase.from("bom").select("part_num, quantity"),
+      supabase.from("bom").select("part_num, quantity").is("used_at", null),
     ]).then(([, pts, bxs, bom]) => {
       setAllParts(pts.data ?? []);
       setBoxes(bxs.data ?? []);

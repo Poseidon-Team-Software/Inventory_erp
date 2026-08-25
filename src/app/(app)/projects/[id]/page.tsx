@@ -42,20 +42,14 @@ type PartOption = {
   inStock: number;
 };
 
-type ImportRow = {
-  part_num?: string;
-  manufacturer_part_num?: string;
-  quantity: number;
-  designator?: string;
-  notes?: string;
-};
+type ImportRow =
+  | { status: "ok"; identifier: string; part: PartOption; quantity: number; designator: string | null }
+  | { status: "error"; identifier: string; reason: string };
 
 type ImportSummary = {
   imported: number;
-  createdParts: string[];
-  errors: { rowIndex: number; identifier: string; reason: string }[];
-  duplicateDesignators: { rowIndex: number; designator: string; identifier: string }[];
-  error?: string;
+  errors: { identifier: string; reason: string }[];
+  fatalError?: string;
 };
 
 function csvEscape(value: unknown): string {
@@ -142,6 +136,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Solder PCB modal — commits the BOM's parts against real inventory
+  const [showSolderModal, setShowSolderModal] = useState(false);
+  const [soldering, setSoldering] = useState(false);
+  const [solderError, setSolderError] = useState<string | null>(null);
 
   // CSV import
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -234,6 +233,30 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setShowAddModal(true);
   }
 
+  // Inserts one part into this project's BOM. Shared by the "Add Part" modal
+  // and the CSV import loop, so both go through the exact same write.
+  async function addPartToBom(
+    supabase: ReturnType<typeof createClient>,
+    part: PartOption,
+    quantity: number,
+    designator: string | null
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const { error } = await supabase.from("bom").insert({
+      project_id: id,
+      part_num: part.part_num,
+      quantity,
+      designator: designator?.trim() || null,
+    });
+
+    if (error) {
+      return {
+        ok: false,
+        error: error.code === "23505" ? "That designator is already used in this BOM." : error.message,
+      };
+    }
+    return { ok: true };
+  }
+
   async function handleAddPart() {
     if (!selectedPart) { setAddError("Please select a part."); return; }
     if (addQty < 1) { setAddError("Quantity must be at least 1."); return; }
@@ -242,22 +265,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setAddError(null);
 
     const supabase = createClient();
-
-    const { error: bomError } = await supabase.from("bom").insert({
-      project_id: id,
-      part_num: selectedPart.part_num,
-      quantity: addQty,
-      designator: addDesignator.trim() || null,
-    });
+    const result = await addPartToBom(supabase, selectedPart, addQty, addDesignator);
 
     setAddSubmitting(false);
 
-    if (bomError) {
-      setAddError(
-        bomError.code === "23505"
-          ? "That designator is already used in this BOM."
-          : bomError.message
-      );
+    if (!result.ok) {
+      setAddError(result.error);
       return;
     }
 
@@ -265,21 +278,24 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     setShowAddModal(false);
   }
 
-  async function handleDeleteProject() {
-    setDeleting(true);
-    setDeleteError(null);
-
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    // Return every BOM quantity to inventory before the project (and its BOM,
-    // which cascades) is removed.
-    const demand = bom.reduce((acc, r) => {
+  // Total quantity needed per part_num across the current BOM.
+  function bomDemandByPart(): Record<string, number> {
+    return bom.reduce((acc, r) => {
       if (!r.parts) return acc;
       acc[r.parts.part_num] = (acc[r.parts.part_num] ?? 0) + r.quantity;
       return acc;
     }, {} as Record<string, number>);
+  }
 
+  // Applies `sign * qty` to each part's inventory (aggregated across any
+  // per-location rows into the first one found). Shared by "Solder PCB"
+  // (consumes stock, sign -1) and project deletion (returns it, sign +1).
+  async function applyInventoryDelta(
+    supabase: ReturnType<typeof createClient>,
+    demand: Record<string, number>,
+    sign: 1 | -1,
+    userId: string | null
+  ) {
     for (const [partNum, qty] of Object.entries(demand)) {
       const { data: existing } = await supabase
         .from("inventory")
@@ -292,21 +308,54 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         await supabase
           .from("inventory")
           .update({
-            quantity: existing.quantity + qty,
+            quantity: existing.quantity + sign * qty,
             last_updated: new Date().toISOString(),
-            updated_by: user?.id ?? null,
+            updated_by: userId,
           })
           .eq("entry_id", existing.entry_id);
       } else {
         await supabase.from("inventory").insert({
           part_num: partNum,
-          quantity: qty,
+          quantity: sign * qty,
           min_quantity: 0,
-          updated_by: user?.id ?? null,
+          updated_by: userId,
           last_updated: new Date().toISOString(),
         });
       }
     }
+  }
+
+  async function handleSolderPcb() {
+    setSoldering(true);
+    setSolderError(null);
+
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    try {
+      await applyInventoryDelta(supabase, bomDemandByPart(), -1, user?.id ?? null);
+      // Stamp every current row as used so it stops counting toward Needs
+      // Ordering demand elsewhere — adding more parts later starts fresh.
+      await supabase.from("bom").update({ used_at: new Date().toISOString() }).eq("project_id", id);
+      await Promise.all([loadBom(supabase), loadPartOptions(supabase)]);
+      setShowSolderModal(false);
+    } catch (err) {
+      setSolderError(err instanceof Error ? err.message : "Failed to update inventory.");
+    } finally {
+      setSoldering(false);
+    }
+  }
+
+  async function handleDeleteProject() {
+    setDeleting(true);
+    setDeleteError(null);
+
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    // Return every BOM quantity to inventory before the project (and its BOM,
+    // which cascades) is removed.
+    await applyInventoryDelta(supabase, bomDemandByPart(), 1, user?.id ?? null);
 
     const { error } = await supabase.from("projects").delete().eq("proj_id", id);
 
@@ -355,50 +404,89 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     e.target.value = ""; // allow re-selecting the same file later
     if (!file) return;
 
-    const text = await file.text();
-    const Papa = (await import("papaparse")).default;
-    const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
-
     setImportSummary(null);
 
-    if (parsed.errors.length > 0) {
-      setImportParseError(parsed.errors[0].message);
-      setImportRows([]);
-    } else {
+    try {
+      const text = await file.text();
+      const Papa = (await import("papaparse")).default;
+      const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
+
+      if (parsed.errors.length > 0) {
+        setImportParseError(parsed.errors[0].message);
+        setImportRows([]);
+        setShowImportModal(true);
+        return;
+      }
       setImportParseError(null);
-      setImportRows(
-        parsed.data.map((row) => ({
-          part_num: row.part_num?.trim() || undefined,
-          manufacturer_part_num: row.manufacturer_part_num?.trim() || undefined,
-          quantity: Number(row.quantity) || 0,
-          designator: row.designator?.trim() || undefined,
-          notes: row.notes?.trim() || undefined,
-        }))
+
+      // Match each row against parts already in the catalog — same set the
+      // "Add Part" dropdown offers. No Mouser fallback here.
+      const byPartNum = new Map(partOptions.map((p) => [p.part_num, p]));
+      const byMpn = new Map(
+        partOptions
+          .filter((p) => p.manufacturer_part_num)
+          .map((p) => [p.manufacturer_part_num!.toLowerCase(), p])
       );
+
+      setImportRows(
+        parsed.data.map((row): ImportRow => {
+          const partNum = row.part_num?.trim() || "";
+          const mpn = row.manufacturer_part_num?.trim() || "";
+          const identifier = partNum || mpn || "(missing)";
+          const quantity = Number(row.quantity) || 0;
+          const designator = row.designator?.trim() || null;
+
+          const part = (partNum && byPartNum.get(partNum)) || (mpn && byMpn.get(mpn.toLowerCase())) || null;
+
+          if (!part) return { status: "error", identifier, reason: "not found in parts catalog" };
+          if (quantity < 1) return { status: "error", identifier, reason: "quantity must be at least 1" };
+
+          return { status: "ok", identifier, part, quantity, designator };
+        })
+      );
+      setShowImportModal(true);
+    } catch (err) {
+      setImportParseError(err instanceof Error ? err.message : "Couldn't read that file.");
+      setImportRows([]);
+      setShowImportModal(true);
     }
-    setShowImportModal(true);
   }
 
   async function handleConfirmImport() {
     setImporting(true);
     const supabase = createClient();
 
-    const res = await fetch(`/api/projects/${id}/bom/import`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rows: importRows }),
-    });
-    const data = await res.json();
+    try {
+      // Replace the existing BOM, then add every valid CSV row exactly the
+      // way "Add Part" does — one call to addPartToBom per row.
+      const { error: deleteError } = await supabase.from("bom").delete().eq("project_id", id);
+      if (deleteError) {
+        setImportSummary({ imported: 0, errors: [], fatalError: `Couldn't clear the existing BOM: ${deleteError.message}` });
+        return;
+      }
 
-    if (!res.ok) {
-      setImportSummary({ imported: 0, createdParts: [], errors: [], duplicateDesignators: [], error: data.error ?? "Import failed" });
+      const errors: { identifier: string; reason: string }[] = importRows
+        .filter((r) => r.status === "error")
+        .map((r) => ({ identifier: r.identifier, reason: r.reason }));
+
+      let imported = 0;
+      for (const row of importRows) {
+        if (row.status !== "ok") continue;
+        const result = await addPartToBom(supabase, row.part, row.quantity, row.designator);
+        if (result.ok) {
+          imported++;
+        } else {
+          errors.push({ identifier: row.identifier, reason: result.error });
+        }
+      }
+
+      setImportSummary({ imported, errors });
+      await Promise.all([loadBom(supabase), loadPartOptions(supabase)]);
+    } catch (err) {
+      setImportSummary({ imported: 0, errors: [], fatalError: err instanceof Error ? err.message : "Import failed unexpectedly." });
+    } finally {
       setImporting(false);
-      return;
     }
-
-    setImportSummary(data);
-    await Promise.all([loadBom(supabase), loadPartOptions(supabase)]);
-    setImporting(false);
   }
 
   function closeImportModal() {
@@ -498,7 +586,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           </div>
 
           {/* Actions */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <button
               onClick={handleExportCsv}
               disabled={bom.length === 0}
@@ -509,6 +597,17 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
               </svg>
               <span className="text-[11px] font-medium">Export CSV</span>
+            </button>
+            <button
+              onClick={() => { setSolderError(null); setShowSolderModal(true); }}
+              disabled={bom.length === 0}
+              title={bom.length === 0 ? "No parts in BOM" : "Deduct these parts from inventory"}
+              className="flex flex-col items-center justify-center gap-1.5 px-3 py-3 rounded-xl border border-[#ee8000]/30 text-[#ee8000] hover:bg-[#ee8000]/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 21h6" /><path d="M9 3h6l3 7-3 2H9l-3-2z" /><path d="M12 12v9" /><path d="M6 21c0-2 2-3 2-3" /><path d="M18 21c0-2-2-3-2-3" />
+              </svg>
+              <span className="text-[11px] font-medium">Solder PCB</span>
             </button>
             <button
               disabled
@@ -776,6 +875,55 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         </div>
       )}
 
+      {/* ── Solder PCB Modal ── */}
+      {showSolderModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+          onClick={(e) => { if (e.target === e.currentTarget && !soldering) setShowSolderModal(false); }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 max-h-[85vh] overflow-y-auto">
+            <h2 className="text-lg font-semibold text-[#1c1c1e] mb-1">Solder PCB</h2>
+            <p className="text-xs text-[#1c1c1e]/40 mb-5">
+              Confirm these are the actual components you used — each part below will be deducted from inventory.
+            </p>
+
+            <div className="rounded-xl border border-[#1c1c1e]/10 divide-y divide-[#1c1c1e]/8 mb-5">
+              {bom.map((r) => (
+                <div key={r.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
+                  <span className="text-[#1c1c1e]/80 truncate pr-3">{r.parts?.description ?? r.parts?.part_num ?? "—"}</span>
+                  <span className="font-semibold text-[#1c1c1e] shrink-0">{r.quantity}</span>
+                </div>
+              ))}
+            </div>
+
+            {solderError && <p className="text-xs text-red-500 mb-4">{solderError}</p>}
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowSolderModal(false)}
+                disabled={soldering}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e]/70 hover:bg-[#1c1c1e]/5 disabled:opacity-40 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSolderPcb}
+                disabled={soldering}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+              >
+                {soldering && (
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                )}
+                {soldering ? "Updating…" : "Yes, deduct from inventory"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Import CSV Modal ── */}
       {showImportModal && (
         <div
@@ -798,12 +946,26 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             ) : !importSummary ? (
               <>
                 <p className="text-xs text-[#1c1c1e]/40 mb-5">
-                  Each row is matched to our parts catalog by part number, falling back to a live Mouser lookup when needed.
+                  Each row is matched to our parts catalog by part number or manufacturer part number, then added to the BOM
+                  the same way the &ldquo;Add Part&rdquo; button does.
                 </p>
                 <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-sm px-4 py-3 mb-5 leading-relaxed">
                   This <strong>replaces</strong> the current BOM. {bom.length} existing part{bom.length !== 1 ? "s" : ""} will be removed and
-                  replaced with {importRows.length} row{importRows.length !== 1 ? "s" : ""} from this file.
+                  replaced with {importRows.filter((r) => r.status === "ok").length} of {importRows.length} row{importRows.length !== 1 ? "s" : ""} from this file.
                 </div>
+
+                {importRows.some((r) => r.status === "error") && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 text-red-600 text-xs px-4 py-3 mb-5">
+                    <p className="font-medium mb-1">
+                      {importRows.filter((r) => r.status === "error").length} row{importRows.filter((r) => r.status === "error").length !== 1 ? "s" : ""} will be skipped:
+                    </p>
+                    {importRows
+                      .filter((r): r is Extract<ImportRow, { status: "error" }> => r.status === "error")
+                      .map((r, i) => (
+                        <p key={i}>{r.identifier} — {r.reason}</p>
+                      ))}
+                  </div>
+                )}
 
                 <div className="flex gap-3">
                   <button
@@ -815,7 +977,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                   </button>
                   <button
                     onClick={handleConfirmImport}
-                    disabled={importing || importRows.length === 0}
+                    disabled={importing || importRows.filter((r) => r.status === "ok").length === 0}
                     className="flex-1 px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
                   >
                     {importing && (
@@ -830,46 +992,28 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               </>
             ) : (
               <>
-                {importSummary.error ? (
-                  <p className="text-sm text-red-500 leading-relaxed my-4">{importSummary.error}</p>
-                ) : (
-                  <div className="flex flex-col gap-3 my-4">
-                    <p className="text-sm text-[#1c1c1e]/70">
-                      Imported <strong>{importSummary.imported}</strong> part{importSummary.imported !== 1 ? "s" : ""} into the BOM.
-                    </p>
+                <div className="flex flex-col gap-3 my-4">
+                  {importSummary.fatalError ? (
+                    <p className="text-sm text-red-500 leading-relaxed">{importSummary.fatalError}</p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-[#1c1c1e]/70">
+                        Imported <strong>{importSummary.imported}</strong> part{importSummary.imported !== 1 ? "s" : ""} into the BOM.
+                      </p>
 
-                    {importSummary.createdParts.length > 0 && (
-                      <div className="text-sm">
-                        <p className="text-[#1c1c1e]/70 mb-1">
-                          Added {importSummary.createdParts.length} new part{importSummary.createdParts.length !== 1 ? "s" : ""} from Mouser:
-                        </p>
-                        <p className="font-mono text-xs text-[#1c1c1e]/50 break-words">{importSummary.createdParts.join(", ")}</p>
-                      </div>
-                    )}
-
-                    {importSummary.duplicateDesignators.length > 0 && (
-                      <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-xs px-4 py-3">
-                        <p className="font-medium mb-1">
-                          {importSummary.duplicateDesignators.length} duplicate designator{importSummary.duplicateDesignators.length !== 1 ? "s" : ""} skipped:
-                        </p>
-                        {importSummary.duplicateDesignators.map((d) => (
-                          <p key={d.rowIndex}>Row {d.rowIndex + 2}: designator &ldquo;{d.designator}&rdquo; ({d.identifier})</p>
-                        ))}
-                      </div>
-                    )}
-
-                    {importSummary.errors.length > 0 && (
-                      <div className="rounded-xl border border-red-200 bg-red-50 text-red-600 text-xs px-4 py-3">
-                        <p className="font-medium mb-1">
-                          {importSummary.errors.length} row{importSummary.errors.length !== 1 ? "s" : ""} skipped:
-                        </p>
-                        {importSummary.errors.map((err) => (
-                          <p key={err.rowIndex}>Row {err.rowIndex + 2}: {err.identifier} — {err.reason}</p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
+                      {importSummary.errors.length > 0 && (
+                        <div className="rounded-xl border border-red-200 bg-red-50 text-red-600 text-xs px-4 py-3">
+                          <p className="font-medium mb-1">
+                            {importSummary.errors.length} row{importSummary.errors.length !== 1 ? "s" : ""} skipped:
+                          </p>
+                          {importSummary.errors.map((err, i) => (
+                            <p key={i}>{err.identifier} — {err.reason}</p>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
 
                 <button
                   onClick={closeImportModal}
