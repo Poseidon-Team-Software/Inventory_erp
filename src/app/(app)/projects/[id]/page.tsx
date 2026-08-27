@@ -22,6 +22,7 @@ type BomRow = {
   quantity: number;
   designator: string | null;
   notes: string | null;
+  critical_since: string | null;
   parts: {
     part_num: string;
     manufacturer_part_num: string | null;
@@ -153,7 +154,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   async function loadBom(supabase: ReturnType<typeof createClient>) {
     const { data: bomData } = await supabase
       .from("bom")
-      .select("id, quantity, designator, notes, parts(part_num, manufacturer_part_num, description, value, footprint, category)")
+      .select("id, quantity, designator, notes, critical_since, parts(part_num, manufacturer_part_num, description, value, footprint, category)")
       .eq("project_id", id)
       .order("designator");
 
@@ -325,6 +326,22 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     }
   }
 
+  // For each BOM row, how much of its needed quantity is actually covered by
+  // current stock. Stock is pooled per part_num across rows in BOM order, so
+  // two rows needing the same part correctly split one shared pool.
+  function computeSolderPlan(): { row: BomRow; fulfilled: number; remaining: number }[] {
+    const remainingStock: Record<string, number> = {};
+    return bom.map((r) => {
+      if (!r.parts) return { row: r, fulfilled: 0, remaining: r.quantity };
+      const partNum = r.parts.part_num;
+      if (!(partNum in remainingStock)) remainingStock[partNum] = r.inStock;
+      const available = Math.max(remainingStock[partNum], 0);
+      const fulfilled = Math.min(r.quantity, available);
+      remainingStock[partNum] = available - fulfilled;
+      return { row: r, fulfilled, remaining: r.quantity - fulfilled };
+    });
+  }
+
   async function handleSolderPcb() {
     setSoldering(true);
     setSolderError(null);
@@ -333,10 +350,26 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     const { data: { user } } = await supabase.auth.getUser();
 
     try {
-      await applyInventoryDelta(supabase, bomDemandByPart(), -1, user?.id ?? null);
-      // Stamp every current row as used so it stops counting toward Needs
-      // Ordering demand elsewhere — adding more parts later starts fresh.
-      await supabase.from("bom").update({ used_at: new Date().toISOString() }).eq("project_id", id);
+      for (const { row, fulfilled, remaining } of computeSolderPlan()) {
+        if (!row.parts) continue;
+
+        if (fulfilled > 0) {
+          await applyInventoryDelta(supabase, { [row.parts.part_num]: fulfilled }, -1, user?.id ?? null);
+        }
+
+        if (remaining > 0) {
+          // Short on stock — deduct what's available, leave the rest of
+          // this row open (unstamped) so it keeps counting as demand, and
+          // flag it critical. Keep the original critical_since if this row
+          // was already blocked from an earlier solder attempt.
+          await supabase
+            .from("bom")
+            .update({ quantity: remaining, used_at: null, critical_since: row.critical_since ?? new Date().toISOString() })
+            .eq("id", row.id);
+        } else {
+          await supabase.from("bom").update({ used_at: new Date().toISOString(), critical_since: null }).eq("id", row.id);
+        }
+      }
       await Promise.all([loadBom(supabase), loadPartOptions(supabase)]);
       setShowSolderModal(false);
     } catch (err) {
@@ -895,6 +928,27 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                 </div>
               ))}
             </div>
+
+            {(() => {
+              const shortPlan = computeSolderPlan().filter((p) => p.remaining > 0);
+              if (shortPlan.length === 0) return null;
+              return (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-xs px-4 py-3 mb-5 leading-relaxed">
+                  <p className="font-medium mb-1">
+                    Not enough stock for {shortPlan.length} part{shortPlan.length !== 1 ? "s" : ""}:
+                  </p>
+                  {shortPlan.map((p) => (
+                    <p key={p.row.id}>
+                      {p.row.parts?.description ?? p.row.parts?.part_num} — short {p.remaining}
+                    </p>
+                  ))}
+                  <p className="mt-1.5">
+                    Proceeding will deduct what&apos;s available and leave the shortfall as open demand on this
+                    project&apos;s BOM (still counted in Needs Ordering).
+                  </p>
+                </div>
+              );
+            })()}
 
             {solderError && <p className="text-xs text-red-500 mb-4">{solderError}</p>}
 

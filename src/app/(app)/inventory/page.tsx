@@ -49,6 +49,15 @@ type Box = {
   colour: string | null;
 };
 
+type CriticalRow = {
+  id: string;
+  quantity: number;
+  critical_since: string;
+  part_num: string;
+  parts: { description: string | null; value: string | null; footprint: string | null } | null;
+  projects: { proj_name: string } | null;
+};
+
 const COLS = [
   "Part #", "Category", "Description", "Manufacturer",
   "Value", "Footprint", "Qty", "Min Qty", "Location",
@@ -61,6 +70,7 @@ export default function InventoryPage() {
   const [allParts, setAllParts] = useState<Part[]>([]);
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [bomDemand, setBomDemand] = useState<Record<string, number>>({});
+  const [critical, setCritical] = useState<CriticalRow[]>([]);
   const [filterQuery, setFilterQuery] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -98,7 +108,12 @@ export default function InventoryPage() {
       supabase.from("parts").select("part_num, category, value, description, manufacturer").order("part_num"),
       supabase.from("boxes").select("box_id, name, description, colour").order("name"),
       supabase.from("bom").select("part_num, quantity").is("used_at", null),
-    ]).then(([, pts, bxs, bom]) => {
+      supabase
+        .from("bom")
+        .select("id, quantity, critical_since, part_num, parts(description, value, footprint), projects(proj_name)")
+        .not("critical_since", "is", null)
+        .order("critical_since", { ascending: true }),
+    ]).then(([, pts, bxs, bom, crit]) => {
       setAllParts(pts.data ?? []);
       setBoxes(bxs.data ?? []);
       setBomDemand(
@@ -107,6 +122,7 @@ export default function InventoryPage() {
           return acc;
         }, {} as Record<string, number>)
       );
+      setCritical((crit.data as unknown as CriticalRow[]) ?? []);
       setLoading(false);
     });
   }, []);
@@ -319,6 +335,53 @@ export default function InventoryPage() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Critical — Blocking a Build */}
+      {!loading && critical.length > 0 && (
+        <div className="mt-10">
+          <div className="flex items-center gap-2 mb-4">
+            <h2 className="text-lg font-semibold text-[#1c1c1e]">Critical — Blocking a Build</h2>
+            <span className="text-xs font-medium text-red-500 bg-red-50 px-2 py-0.5 rounded-full">{critical.length}</span>
+          </div>
+
+          <div className="overflow-x-auto rounded-2xl border border-red-200 shadow-sm">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-red-600 text-white">
+                <tr>
+                  {["Part #", "Description", "Value", "Footprint", "Project", "Short By", "Blocked Since"].map((h) => (
+                    <th key={h} className="px-4 py-3 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {critical.map((r, i) => (
+                  <tr
+                    key={r.id}
+                    className={`border-t border-red-100 ${
+                      i % 2 === 0 ? "bg-white" : "bg-red-50/40"
+                    } hover:bg-red-50 transition-colors`}
+                  >
+                    <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">{r.part_num}</td>
+                    <td className="px-4 py-3 max-w-xs truncate">{r.parts?.description ?? "—"}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{r.parts?.value ?? "—"}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{r.parts?.footprint ?? "—"}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{r.projects?.proj_name ?? "—"}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-red-600 bg-red-50 border border-red-100 px-2.5 py-1 rounded-full">
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                        {r.quantity}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {new Date(r.critical_since).toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
