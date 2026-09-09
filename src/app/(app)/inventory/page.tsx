@@ -13,6 +13,7 @@ type InventoryRow = {
   quantity: number;
   min_quantity: number;
   last_updated: string;
+  location: string | null;
   parts: {
     part_num: string;
     category: string;
@@ -88,6 +89,7 @@ export default function InventoryPage() {
   const [submitting, setSubmitting] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [scanLookupLoading, setScanLookupLoading] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState<{ entryId: string; existingQty: number } | null>(null);
 
   const partDropRef = useRef<HTMLDivElement>(null);
 
@@ -97,7 +99,7 @@ export default function InventoryPage() {
     const { data } = await supabase
       .from("inventory")
       .select(`
-        entry_id, quantity, min_quantity, last_updated,
+        entry_id, quantity, min_quantity, last_updated, location,
         parts ( part_num, category, description, manufacturer, manufacturer_part_num, value, footprint ),
         boxes ( name )
       `)
@@ -221,6 +223,7 @@ export default function InventoryPage() {
     setMinQty(0);
     setLocationId("");
     setModalError(null);
+    setDuplicateWarning(null);
     setShowModal(true);
   }
 
@@ -239,6 +242,7 @@ export default function InventoryPage() {
     setMinQty(0);
     setLocationId("");
     setModalError(null);
+    setDuplicateWarning(null);
     setShowModal(true);
 
     const localMatch = allParts.find((p) => p.part_num.toLowerCase() === lookup.toLowerCase());
@@ -284,6 +288,25 @@ export default function InventoryPage() {
       setModalError("Please select a part.");
       return;
     }
+
+    // Same part, same location, same quantity already on the shelf — most
+    // likely someone re-scanned the same physical parts rather than meaning
+    // to add more, so check before silently colliding with the unique
+    // (part_num, location) constraint.
+    const existing = rows.find(
+      (r) => r.parts?.part_num === selectedPart.part_num && (r.location ?? null) === (locationId || null)
+    );
+    if (existing && existing.quantity === quantity) {
+      setModalError(null);
+      setDuplicateWarning({ entryId: existing.entry_id, existingQty: existing.quantity });
+      return;
+    }
+
+    await submitAdd();
+  }
+
+  async function submitAdd() {
+    if (!selectedPart) return;
     setSubmitting(true);
     setModalError(null);
 
@@ -312,6 +335,39 @@ export default function InventoryPage() {
 
     await fetchInventory(supabase);
     setShowModal(false);
+  }
+
+  async function confirmDuplicateAdd() {
+    if (!duplicateWarning) return;
+    setSubmitting(true);
+    setModalError(null);
+
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { error } = await supabase
+      .from("inventory")
+      .update({
+        quantity: duplicateWarning.existingQty + quantity,
+        updated_by: user?.id ?? null,
+        last_updated: new Date().toISOString(),
+      })
+      .eq("entry_id", duplicateWarning.entryId);
+
+    setSubmitting(false);
+
+    if (error) {
+      setModalError(error.message);
+      return;
+    }
+
+    setDuplicateWarning(null);
+    await fetchInventory(supabase);
+    setShowModal(false);
+  }
+
+  function cancelDuplicateAdd() {
+    setDuplicateWarning(null);
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -524,6 +580,45 @@ export default function InventoryPage() {
           onClick={(e) => { if (e.target === e.currentTarget) setShowModal(false); }}
         >
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+          {duplicateWarning ? (
+            <>
+              <h2 className="text-lg font-semibold text-[#1c1c1e] mb-3">Already in Inventory</h2>
+              <p className="text-sm text-[#1c1c1e]/70 mb-6">
+                <span className="font-mono">{selectedPart?.part_num}</span> already has{" "}
+                <span className="font-semibold">{duplicateWarning.existingQty}</span> in stock at this
+                location — the same amount you&apos;re about to add ({quantity}). Did you mean to add {quantity}{" "}
+                more (new total {duplicateWarning.existingQty + quantity}), or is this a duplicate scan of
+                the same parts?
+              </p>
+
+              {modalError && (
+                <p className="text-xs text-red-500 mb-4">{modalError}</p>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={cancelDuplicateAdd}
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e]/70 hover:bg-[#1c1c1e]/5 transition"
+                >
+                  Mistaken Scan — Cancel
+                </button>
+                <button
+                  onClick={confirmDuplicateAdd}
+                  disabled={submitting}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] disabled:opacity-40 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+                >
+                  {submitting && (
+                    <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                    </svg>
+                  )}
+                  {submitting ? "Adding…" : `Add ${quantity} More`}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
             <h2 className="text-lg font-semibold text-[#1c1c1e] mb-5">Add Component to Inventory</h2>
 
             {/* Part selector */}
@@ -662,6 +757,8 @@ export default function InventoryPage() {
                 {submitting ? "Adding…" : "Add to Inventory"}
               </button>
             </div>
+            </>
+          )}
           </div>
         </div>
       )}
