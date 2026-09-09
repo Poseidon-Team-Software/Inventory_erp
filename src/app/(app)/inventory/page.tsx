@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import SelectDropdown from "@/components/SelectDropdown";
+import BarcodeScannerModal from "@/components/BarcodeScannerModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ export default function InventoryPage() {
 
   // Modal
   const [showModal, setShowModal] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const [partSearch, setPartSearch] = useState("");
   const [selectedPart, setSelectedPart] = useState<Part | null>(null);
   const [showPartDrop, setShowPartDrop] = useState(false);
@@ -84,6 +86,7 @@ export default function InventoryPage() {
   const [locationId, setLocationId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+  const [scanLookupLoading, setScanLookupLoading] = useState(false);
 
   const partDropRef = useRef<HTMLDivElement>(null);
 
@@ -220,6 +223,55 @@ export default function InventoryPage() {
     setShowModal(true);
   }
 
+  async function handleScanned(code: string) {
+    setShowScanner(false);
+    setPartSearch(code);
+    setSelectedPart(null);
+    setShowPartDrop(false);
+    setQuantity(0);
+    setMinQty(0);
+    setLocationId("");
+    setModalError(null);
+    setShowModal(true);
+
+    const localMatch = allParts.find((p) => p.part_num.toLowerCase() === code.toLowerCase());
+    if (localMatch) {
+      setSelectedPart(localMatch);
+      return;
+    }
+
+    setScanLookupLoading(true);
+    try {
+      const res = await fetch("/api/parts/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: code }),
+      });
+      const json = await res.json();
+
+      if (res.ok && json.parts?.length > 0) {
+        const imported = json.parts as Part[];
+        setAllParts((prev) => {
+          const existing = new Set(prev.map((p) => p.part_num));
+          const fresh = imported.filter((p) => !existing.has(p.part_num));
+          return [...fresh, ...prev];
+        });
+        const mouserMatch =
+          imported.find((p) => p.part_num.toLowerCase() === code.toLowerCase()) ?? imported[0];
+        setSelectedPart(mouserMatch);
+        setPartSearch("");
+      } else {
+        setShowPartDrop(true);
+        setModalError(`"${code}" wasn't found locally or on Mouser — search or add it manually.`);
+      }
+    } catch {
+      setShowPartDrop(true);
+      setModalError(`"${code}" wasn't found locally or on Mouser — search or add it manually.`);
+    } finally {
+      setScanLookupLoading(false);
+    }
+  }
+
   async function handleAdd() {
     if (!selectedPart) {
       setModalError("Please select a part.");
@@ -271,6 +323,22 @@ export default function InventoryPage() {
           className="flex-1 min-w-48 max-w-sm px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 bg-white text-sm text-[#1c1c1e] placeholder:text-[#1c1c1e]/35 focus:outline-none focus:ring-2 focus:ring-[#ee8000]/50 transition"
         />
         <button
+          onClick={() => setShowScanner(true)}
+          className="px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 bg-white text-[#1c1c1e] text-sm font-medium hover:bg-[#1c1c1e]/5 transition flex items-center gap-2 whitespace-nowrap"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 8V6a2 2 0 0 1 2-2h2" />
+            <path d="M4 16v2a2 2 0 0 0 2 2h2" />
+            <path d="M20 8V6a2 2 0 0 0-2-2h-2" />
+            <path d="M20 16v2a2 2 0 0 1-2 2h-2" />
+            <line x1="7" y1="8" x2="7" y2="16" />
+            <line x1="10.5" y1="8" x2="10.5" y2="16" />
+            <line x1="13.5" y1="8" x2="13.5" y2="16" />
+            <line x1="17" y1="8" x2="17" y2="16" />
+          </svg>
+          Scan
+        </button>
+        <button
           onClick={openModal}
           className="px-4 py-2.5 rounded-xl bg-[#ee8000] text-white text-sm font-medium hover:bg-[#d97000] transition flex items-center gap-2 whitespace-nowrap"
         >
@@ -281,6 +349,12 @@ export default function InventoryPage() {
           Add Component
         </button>
       </div>
+
+      <BarcodeScannerModal
+        open={showScanner}
+        onClose={() => setShowScanner(false)}
+        onDetected={handleScanned}
+      />
 
       {/* Table */}
       {loading ? (
@@ -450,10 +524,20 @@ export default function InventoryPage() {
               <label className="block text-[10px] font-semibold text-[#1c1c1e]/50 mb-1.5 uppercase tracking-widest">
                 Part
               </label>
+              {scanLookupLoading && (
+                <p className="flex items-center gap-1.5 text-xs text-[#1c1c1e]/50 mb-1.5">
+                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                  </svg>
+                  Not in inventory — checking Mouser…
+                </p>
+              )}
               <div className="relative" ref={partDropRef}>
                 <input
                   type="text"
                   autoComplete="off"
+                  disabled={scanLookupLoading}
                   placeholder="Search part number or description…"
                   value={
                     selectedPart
@@ -466,7 +550,7 @@ export default function InventoryPage() {
                     setShowPartDrop(true);
                   }}
                   onFocus={() => setShowPartDrop(true)}
-                  className="w-full px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e] placeholder:text-[#1c1c1e]/35 focus:outline-none focus:ring-2 focus:ring-[#ee8000]/50 transition"
+                  className="w-full px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 text-sm text-[#1c1c1e] placeholder:text-[#1c1c1e]/35 focus:outline-none focus:ring-2 focus:ring-[#ee8000]/50 transition disabled:opacity-50"
                 />
                 {showPartDrop && partResults.length > 0 && !selectedPart && (
                   <div className="absolute z-10 mt-1 w-full bg-white rounded-xl border border-[#1c1c1e]/10 shadow-xl max-h-52 overflow-y-auto">
