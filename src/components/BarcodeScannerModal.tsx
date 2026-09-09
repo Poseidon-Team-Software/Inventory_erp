@@ -3,9 +3,16 @@
 import { useEffect, useRef, useState } from "react";
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import type { IScannerControls } from "@zxing/browser";
-import { DecodeHintType } from "@zxing/library";
+import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
-const hints = new Map<DecodeHintType, unknown>([[DecodeHintType.TRY_HARDER, true]]);
+// Supplier packing labels (Mouser, DigiKey, ...) carry several 1D barcodes
+// for PO/lot/quantity/etc alongside one 2D code that encodes the actual
+// part data. Restricting to 2D formats keeps the reader from locking onto
+// one of those other barcodes instead of the one we want.
+const hints = new Map<DecodeHintType, unknown>([
+  [DecodeHintType.TRY_HARDER, true],
+  [DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.DATA_MATRIX, BarcodeFormat.QR_CODE]],
+]);
 
 type Props = {
   open: boolean;
@@ -47,7 +54,12 @@ export default function BarcodeScannerModal({ open, onClose, onDetected }: Props
             facingMode: { ideal: "environment" },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
-          },
+            // Data Matrix has very little tolerance for blur (unlike QR's big
+            // corner squares, it relies on a fine module grid), and phone
+            // autofocus often doesn't kick in for a close-up, static-looking
+            // shot without this nudged on explicitly.
+            advanced: [{ focusMode: "continuous" }],
+          } as unknown as MediaTrackConstraints,
         },
         videoRef.current!,
         (result) => {
@@ -75,6 +87,10 @@ export default function BarcodeScannerModal({ open, onClose, onDetected }: Props
       controlsRef.current = null;
     };
   }, [open]);
+
+  function refocus() {
+    controlsRef.current?.streamVideoConstraintsApply?.({ focusMode: "continuous" } as unknown as MediaTrackConstraints);
+  }
 
   if (!open) return null;
 
@@ -108,12 +124,13 @@ export default function BarcodeScannerModal({ open, onClose, onDetected }: Props
               autoPlay
               playsInline
               muted
+              onClick={refocus}
               className="absolute inset-0 w-full h-full object-cover"
             />
 
             {/* Viewfinder overlay */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="relative w-72 h-44 max-w-[80vw]">
+              <div className="relative w-56 h-56 max-w-[70vw]">
                 {[
                   "top-0 left-0 border-t-4 border-l-4 rounded-tl-2xl",
                   "top-0 right-0 border-t-4 border-r-4 rounded-tr-2xl",
@@ -127,7 +144,7 @@ export default function BarcodeScannerModal({ open, onClose, onDetected }: Props
 
             <div className="absolute bottom-8 inset-x-0 flex justify-center pointer-events-none">
               <p className="text-xs text-white/70 bg-black/40 px-3 py-1.5 rounded-full">
-                Point the camera at a barcode
+                Point at the 2D barcode — tap the screen if it looks blurry
               </p>
             </div>
           </>

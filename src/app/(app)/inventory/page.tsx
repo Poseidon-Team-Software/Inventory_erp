@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import SelectDropdown from "@/components/SelectDropdown";
 import BarcodeScannerModal from "@/components/BarcodeScannerModal";
+import { parseSupplierLabel } from "@/lib/supplierLabel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -224,17 +225,23 @@ export default function InventoryPage() {
   }
 
   async function handleScanned(code: string) {
+    const label = parseSupplierLabel(code);
+    // Prefer the Mouser part number (exact catalog match), then the
+    // manufacturer part number, falling back to the raw scanned text for
+    // barcodes that aren't a structured supplier label at all.
+    const lookup = label?.mouserPartNumber ?? label?.manufacturerPartNumber ?? code;
+
     setShowScanner(false);
-    setPartSearch(code);
+    setPartSearch(lookup);
     setSelectedPart(null);
     setShowPartDrop(false);
-    setQuantity(0);
+    setQuantity(label?.quantity ?? 0);
     setMinQty(0);
     setLocationId("");
     setModalError(null);
     setShowModal(true);
 
-    const localMatch = allParts.find((p) => p.part_num.toLowerCase() === code.toLowerCase());
+    const localMatch = allParts.find((p) => p.part_num.toLowerCase() === lookup.toLowerCase());
     if (localMatch) {
       setSelectedPart(localMatch);
       return;
@@ -245,7 +252,7 @@ export default function InventoryPage() {
       const res = await fetch("/api/parts/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: code }),
+        body: JSON.stringify({ query: lookup }),
       });
       const json = await res.json();
 
@@ -257,16 +264,16 @@ export default function InventoryPage() {
           return [...fresh, ...prev];
         });
         const mouserMatch =
-          imported.find((p) => p.part_num.toLowerCase() === code.toLowerCase()) ?? imported[0];
+          imported.find((p) => p.part_num.toLowerCase() === lookup.toLowerCase()) ?? imported[0];
         setSelectedPart(mouserMatch);
         setPartSearch("");
       } else {
         setShowPartDrop(true);
-        setModalError(`"${code}" wasn't found locally or on Mouser — search or add it manually.`);
+        setModalError(`"${lookup}" wasn't found locally or on Mouser — search or add it manually.`);
       }
     } catch {
       setShowPartDrop(true);
-      setModalError(`"${code}" wasn't found locally or on Mouser — search or add it manually.`);
+      setModalError(`"${lookup}" wasn't found locally or on Mouser — search or add it manually.`);
     } finally {
       setScanLookupLoading(false);
     }
