@@ -62,8 +62,8 @@ type CriticalRow = {
 };
 
 const COLS = [
-  "Part #", "Category", "Description", "Manufacturer",
-  "Value", "Footprint", "Qty", "Min Qty", "Location",
+  "Part #", "Category", "Description",
+  "Value", "Footprint", "Total", "Used", "Est. Delivery", "Location",
 ] as const;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ export default function InventoryPage() {
   const [critical, setCritical] = useState<CriticalRow[]>([]);
   const [filterQuery, setFilterQuery] = useState("");
   const [loading, setLoading] = useState(true);
+  const [canInsert, setCanInsert] = useState(false);
 
   // Modal
   const [showModal, setShowModal] = useState(false);
@@ -109,6 +110,15 @@ export default function InventoryPage() {
 
   useEffect(() => {
     const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) return;
+      const { data } = await supabase
+        .from("profiles")
+        .select("can_insert_inventory")
+        .eq("user_id", user.id)
+        .single();
+      setCanInsert(data?.can_insert_inventory === true);
+    });
     Promise.all([
       fetchInventory(supabase),
       supabase.from("parts").select("part_num, category, value, description, manufacturer").order("part_num"),
@@ -199,8 +209,13 @@ export default function InventoryPage() {
     needMap.get(partNum)!.demand = demand;
   }
 
+  // To order = what projects need plus the min-quantity buffer, minus what's
+  // on the shelf. e.g. 10 in stock, 13 used, min 2 → order 5.
+  for (const n of needMap.values()) {
+    n.orderQty = Math.max(n.demand + n.minQuantity - n.quantity, 0);
+  }
+
   const toOrder = [...needMap.values()]
-    .map((n) => ({ ...n, orderQty: Math.max(n.minQuantity - n.quantity, n.demand - n.quantity, 0) }))
     .filter((n) => n.orderQty > 0)
     .sort((a, b) => b.orderQty - a.orderQty);
 
@@ -302,7 +317,42 @@ export default function InventoryPage() {
       return;
     }
 
+    // Part already in this box with a different quantity — restocking, so
+    // just top up the existing row.
+    if (existing) {
+      await addToExisting(existing.entry_id, existing.quantity);
+      return;
+    }
+
     await submitAdd();
+  }
+
+  async function addToExisting(entryId: string, existingQty: number) {
+    setSubmitting(true);
+    setModalError(null);
+
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { error } = await supabase
+      .from("inventory")
+      .update({
+        quantity: existingQty + quantity,
+        updated_by: user?.id ?? null,
+        last_updated: new Date().toISOString(),
+      })
+      .eq("entry_id", entryId);
+
+    setSubmitting(false);
+
+    if (error) {
+      setModalError(error.message);
+      return;
+    }
+
+    setDuplicateWarning(null);
+    await fetchInventory(supabase);
+    setShowModal(false);
   }
 
   async function submitAdd() {
@@ -339,31 +389,7 @@ export default function InventoryPage() {
 
   async function confirmDuplicateAdd() {
     if (!duplicateWarning) return;
-    setSubmitting(true);
-    setModalError(null);
-
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-
-    const { error } = await supabase
-      .from("inventory")
-      .update({
-        quantity: duplicateWarning.existingQty + quantity,
-        updated_by: user?.id ?? null,
-        last_updated: new Date().toISOString(),
-      })
-      .eq("entry_id", duplicateWarning.entryId);
-
-    setSubmitting(false);
-
-    if (error) {
-      setModalError(error.message);
-      return;
-    }
-
-    setDuplicateWarning(null);
-    await fetchInventory(supabase);
-    setShowModal(false);
+    await addToExisting(duplicateWarning.entryId, duplicateWarning.existingQty);
   }
 
   function cancelDuplicateAdd() {
@@ -385,6 +411,8 @@ export default function InventoryPage() {
           onChange={(e) => setFilterQuery(e.target.value)}
           className="flex-1 min-w-48 max-w-sm px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 bg-white text-sm text-[#1c1c1e] placeholder:text-[#1c1c1e]/35 focus:outline-none focus:ring-2 focus:ring-[#ee8000]/50 transition"
         />
+        {canInsert && (
+        <>
         <button
           onClick={() => setShowScanner(true)}
           className="px-4 py-2.5 rounded-xl border border-[#1c1c1e]/15 bg-white text-[#1c1c1e] text-sm font-medium hover:bg-[#1c1c1e]/5 transition flex items-center gap-2 whitespace-nowrap"
@@ -411,6 +439,8 @@ export default function InventoryPage() {
           </svg>
           Add Component
         </button>
+        </>
+        )}
       </div>
 
       <BarcodeScannerModal
@@ -441,7 +471,10 @@ export default function InventoryPage() {
             <tbody>
               {filtered.map((r, i) => {
                 const p = r.parts;
-                const lowStock = r.quantity < r.min_quantity;
+                const need = p ? needMap.get(p.part_num) : undefined;
+                const total = need?.quantity ?? r.quantity;
+                const used = need?.demand ?? 0;
+                const order = need?.orderQty ?? 0;
                 return (
                   <tr
                     key={r.entry_id}
@@ -452,20 +485,17 @@ export default function InventoryPage() {
                     <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">{p?.part_num ?? "—"}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{p?.category ?? "—"}</td>
                     <td className="px-4 py-3 max-w-xs truncate">{p?.description ?? "—"}</td>
-                    <td className="px-4 py-3 whitespace-nowrap">{p?.manufacturer ?? "—"}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{p?.value ?? "—"}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{p?.footprint ?? "—"}</td>
                     <td className="px-4 py-3 whitespace-nowrap">
-                      <span className={`font-semibold ${lowStock ? "text-red-500" : "text-[#1c1c1e]"}`}>
-                        {r.quantity}
+                      <span className={`font-semibold ${order > 0 ? "text-red-500" : "text-[#1c1c1e]"}`}>
+                        {total}
                       </span>
-                      {lowStock && (
-                        <span className="ml-1.5 text-[10px] font-medium text-red-400 bg-red-50 px-1.5 py-0.5 rounded-full">
-                          low
-                        </span>
-                      )}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">{r.min_quantity}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">{used}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      {order > 0 ? <span className="font-semibold text-red-500">{order}</span> : "—"}
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap">{r.boxes?.name ?? "—"}</td>
                   </tr>
                 );
